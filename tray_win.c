@@ -61,7 +61,7 @@ static void notify(int msg, const wchar_t *title, const wchar_t *info, DWORD fla
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_icon;
-    lstrcpynW(nid.szTip, L"pytest - HTTP 代理", 64);
+    lstrcpynW(nid.szTip, L"pytest", 64);
     if (info) {
         nid.uFlags |= NIF_INFO;
         lstrcpynW(nid.szInfoTitle, title ? title : L"pytest", 64);
@@ -259,7 +259,7 @@ int tray_run(HINSTANCE hInst) {
     notify(NIM_ADD, NULL, NULL, 0);
     if (!g_ok)
         notify(NIM_MODIFY, L"pytest",
-               L"代理启动失败，请右键托盘图标重试", NIIF_WARNING);
+               L"启动失败，请右键托盘图标重试", NIIF_WARNING);
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
