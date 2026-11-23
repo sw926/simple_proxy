@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 代理核心测试 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译无界面测试版
+        run: cc -O2 -Wall -Wextra -o simple_proxy main.c proxy.c
+
+      - name: 启动本地目标服务器与代理
+        run: |
+          mkdir www
+          printf 'hello-proxy' > www/index.html
+          dd if=/dev/zero of=www/big.bin bs=1024 count=5120 2>/dev/null
+          (cd www && python3 -m http.server 18081 >/dev/null 2>&1 &)
+          ./simple_proxy 18080 &
+          sleep 1
+
+      - name: HTTP 绝对 URI 转发
+        run: |
+          code=$(curl -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o out.txt -w '%{http_code}')
+          cat out.txt
+          [ "$code" = "200" ] && grep -q hello-proxy out.txt
+
+      - name: origin-form + Host 头兜底
+        run: |
+          out=$(printf 'GET /index.html HTTP/1.1\r\nHost: 127.0.0.1:18081\r\n\r\n' | nc -w 3 127.0.0.1 18080)
+          echo "$out" | grep -q hello-proxy
+
+      - name: CONNECT 隧道（HTTPS）
+        run: |
+          code=$(curl -sS -x http://127.0.0.1:18080 https://example.com -o /dev/null -w '%{http_code}')
+          [ "$code" = "200" ]
+
+      - name: 大文件流式转发
+        run: |
+          size=$(curl -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/big.bin | wc -c)
+          echo "size=$size"
+          [ "$size" = "5242880" ]
+
+      - name: 上游连接失败返回 502
+        run: |
+          code=$(curl -sS -x http://127.0.0.1:18080 http://127.0.0.1:18082/ -o /dev/null -w '%{http_code}')
+          [ "$code" = "502" ]
+
+      - name: 畸形请求不崩溃
+        run: |
+          printf 'GARBAGE\r\n\r\n' | nc -w 2 127.0.0.1 18080 >/dev/null || true
+          sleep 1
+          code=$(curl -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o /dev/null -w '%{http_code}')
+          [ "$code" = "200" ]
+
+  build-windows:
+    name: 构建 Windows x64
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: 编译
+        shell: msys2 {0}
+        run: |
+          gcc -O2 -Wall -Wextra -s -static -mwindows \
+            -o SimpleProxy.exe main.c proxy.c tray_win.c config_win.c \
+            -lws2_32 -luser32 -lshell32 -ladvapi32
+          ls -l SimpleProxy.exe
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleProxy-windows-x64
+          path: SimpleProxy.exe
+
+      - name: 打包 zip
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: Compress-Archive -Path SimpleProxy.exe -DestinationPath SimpleProxy.zip
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SimpleProxy.exe
+            SimpleProxy.zip

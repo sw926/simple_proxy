@@ -1,0 +1,8 @@
+SimpleProxy.exe
+SimpleProxy.zip
+simple_proxy
+*.o
+*.log
+out.txt
+www/
+.zcode/
