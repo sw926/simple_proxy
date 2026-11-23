@@ -18,17 +18,19 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: false
-          install: mingw-w64-x86_64-gcc
+          install: mingw-w64-ucrt-x86_64-gcc
 
       - name: 编译
         shell: msys2 {0}
         run: |
+          set -e
           gcc -O2 -Wall -Wextra -s -static -mwindows \
             -o pytest.exe main.c proxy.c tray_win.c config_win.c \
             -lws2_32 -luser32 -lshell32 -ladvapi32
-          gcc -O2 -Wall -Wextra -s -o test_proxy.exe tests/test_main.c proxy.c -lws2_32
+          gcc -O2 -Wall -Wextra -s -I. \
+            -o test_proxy.exe tests/test_main.c proxy.c -lws2_32
           ls -l pytest.exe test_proxy.exe
 
       - name: 代理功能测试
