@@ -9,12 +9,7 @@
 
 #include "proxy.h"
 
-#ifdef _WIN32
 #include <process.h>
-#else
-#include <pthread.h>
-#include <errno.h>
-#endif
 
 #define MAX_HEAD (32 * 1024)      /* 请求头上限 */
 #define OUT_HEAD (MAX_HEAD + 128) /* 重写后请求头的缓冲上限 */
@@ -46,12 +41,7 @@ static struct {
     nc_socket listen_fd;
     volatile int running;
     int port;
-#ifdef _WIN32
     HANDLE accept_thread;
-#else
-    pthread_t accept_thread;
-    int accept_thread_ok;
-#endif
 } g_srv;
 
 int proxy_port(void) { return g_srv.running ? g_srv.port : -1; }
@@ -149,9 +139,8 @@ static int recv_head(nc_socket s, char *buf, size_t cap,
     size_t len = 0;
     *head_len = *total = 0;
     for (;;) {
-        size_t from = len >= 3 ? len - 3 : 0;
-        size_t pos = from;
-        for (; pos + 4 <= len; pos++) {
+        size_t pos;
+        for (pos = 0; pos + 4 <= len; pos++) {
             if (buf[pos] == '\r' && buf[pos + 1] == '\n' &&
                 buf[pos + 2] == '\r' && buf[pos + 3] == '\n') {
                 *head_len = pos + 4;
@@ -478,8 +467,6 @@ done:
 
 typedef struct { nc_socket fd; } conn_arg_t;
 
-#ifdef _WIN32
-
 static unsigned __stdcall client_thread(void *p) {
     conn_arg_t ca = *(conn_arg_t *)p;
     free(p);
@@ -499,6 +486,7 @@ static int spawn_client(nc_socket fd) {
 }
 
 static unsigned __stdcall accept_thread(void *unused) {
+    (void)unused;
     for (;;) {
         struct sockaddr_storage ss;
         int alen = (int)sizeof ss;
@@ -508,47 +496,6 @@ static unsigned __stdcall accept_thread(void *unused) {
     }
     return 0;
 }
-
-#else /* POSIX */
-
-static void *client_thread(void *p) {
-    conn_arg_t ca = *(conn_arg_t *)p;
-    free(p);
-    client_run(ca.fd);
-    return NULL;
-}
-
-static int spawn_client(nc_socket fd) {
-    conn_arg_t *ca = malloc(sizeof *ca);
-    pthread_t t;
-    pthread_attr_t a;
-    if (!ca) return -1;
-    ca->fd = fd;
-    if (pthread_attr_init(&a) != 0) { free(ca); return -1; }
-    pthread_attr_setstacksize(&a, 256 * 1024);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&t, &a, client_thread, ca) != 0) {
-        pthread_attr_destroy(&a);
-        free(ca);
-        return -1;
-    }
-    pthread_attr_destroy(&a);
-    return 0;
-}
-
-static void *accept_thread(void *unused) {
-    (void)unused;
-    for (;;) {
-        struct sockaddr_storage ss;
-        socklen_t alen = sizeof ss;
-        nc_socket c = accept(g_srv.listen_fd, (struct sockaddr *)&ss, &alen);
-        if (c == NC_INVALID) break;
-        if (spawn_client(c) != 0) nc_close(c);
-    }
-    return NULL;
-}
-
-#endif
 
 /* ---------------- 监听器启停 ---------------- */
 
@@ -588,7 +535,6 @@ int proxy_start(int port, char *errbuf, int errbuf_len) {
     g_srv.listen_fd = fd;
     g_srv.port = port;
 
-#ifdef _WIN32
     {
         uintptr_t h = _beginthreadex(NULL, 64 * 1024, accept_thread, NULL, 0, NULL);
         if (!h) {
@@ -598,18 +544,6 @@ int proxy_start(int port, char *errbuf, int errbuf_len) {
         }
         g_srv.accept_thread = (HANDLE)h;
     }
-#else
-    {
-        pthread_t t;
-        if (pthread_create(&t, NULL, accept_thread, NULL) != 0) {
-            nc_close(fd);
-            snprintf(errbuf, errbuf_len, "创建监听线程失败");
-            return -1;
-        }
-        g_srv.accept_thread = t;
-        g_srv.accept_thread_ok = 1;
-    }
-#endif
     g_srv.running = 1;
     return 0;
 }
@@ -617,21 +551,11 @@ int proxy_start(int port, char *errbuf, int errbuf_len) {
 void proxy_stop(void) {
     if (!g_srv.running) return;
     g_srv.running = 0;
-#ifndef _WIN32
-    shutdown(g_srv.listen_fd, SHUT_RDWR); /* 唤醒阻塞中的 accept */
-#endif
     nc_close(g_srv.listen_fd);
-#ifdef _WIN32
     if (g_srv.accept_thread) {
         WaitForSingleObject(g_srv.accept_thread, 3000);
         CloseHandle(g_srv.accept_thread);
         g_srv.accept_thread = NULL;
     }
-#else
-    if (g_srv.accept_thread_ok) {
-        pthread_join(g_srv.accept_thread, NULL);
-        g_srv.accept_thread_ok = 0;
-    }
-#endif
     g_srv.listen_fd = NC_INVALID;
 }

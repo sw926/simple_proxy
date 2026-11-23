@@ -1,8 +1,9 @@
-SimpleProxy.exe
-SimpleProxy.zip
-simple_proxy
+pytest.exe
+pytest.zip
+test_proxy.exe
 *.o
 *.log
 out.txt
+big.out
 www/
 .zcode/

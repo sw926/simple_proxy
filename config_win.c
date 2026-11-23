@@ -6,7 +6,7 @@
 #include "config_win.h"
 
 static const wchar_t *RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const wchar_t *RUN_NAME = L"SimpleProxy";
+static const wchar_t *RUN_NAME = L"pytest";
 
 void config_get_path(wchar_t *path, DWORD cap, const wchar_t *name) {
     wchar_t *base;
@@ -18,7 +18,7 @@ void config_get_path(wchar_t *path, DWORD cap, const wchar_t *name) {
 
 static void create_template(const wchar_t *path) {
     static const char tpl[] =
-        "; SimpleProxy 配置文件\r\n"
+        "; pytest 配置文件\r\n"
         "; port = HTTP 代理监听端口 (1-65535)\r\n"
         "; 修改保存后，右键托盘图标 - 重新加载配置 即可生效\r\n"
         "[proxy]\r\n"

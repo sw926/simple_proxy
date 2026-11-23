@@ -22,14 +22,14 @@ static wchar_t g_status[128];
 
 static CRITICAL_SECTION g_log_lock;
 
-/* ---------- 日志：追加到 exe 目录 proxy.log，超 1MB 截断 ---------- */
+/* ---------- 日志：追加到 exe 目录 pytest.log，超 1MB 截断 ---------- */
 
 static void log_to_file(const char *line) {
     wchar_t path[MAX_PATH];
     FILE *f;
     SYSTEMTIME st;
 
-    config_get_path(path, MAX_PATH, L"proxy.log");
+    config_get_path(path, MAX_PATH, L"pytest.log");
     EnterCriticalSection(&g_log_lock);
     f = _wfopen(path, L"a+");
     if (f) {
@@ -61,10 +61,10 @@ static void notify(int msg, const wchar_t *title, const wchar_t *info, DWORD fla
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = g_icon;
-    lstrcpynW(nid.szTip, L"SimpleProxy - HTTP 代理", 64);
+    lstrcpynW(nid.szTip, L"pytest - HTTP 代理", 64);
     if (info) {
         nid.uFlags |= NIF_INFO;
-        lstrcpynW(nid.szInfoTitle, title ? title : L"SimpleProxy", 64);
+        lstrcpynW(nid.szInfoTitle, title ? title : L"pytest", 64);
         lstrcpynW(nid.szInfo, info, 256);
         nid.dwInfoFlags = flags;
         nid.uTimeout = 5000;
@@ -93,10 +93,10 @@ static void do_reload(void) {
     port = config_load_port();
     if (proxy_start(port, err, sizeof err) == 0) {
         set_status(1, NULL);
-        notify(NIM_MODIFY, L"SimpleProxy", L"配置已重新加载", NIIF_INFO);
+        notify(NIM_MODIFY, L"pytest", L"配置已重新加载", NIIF_INFO);
     } else {
         set_status(0, err);
-        notify(NIM_MODIFY, L"SimpleProxy", L"重新加载失败：端口可能被占用", NIIF_WARNING);
+        notify(NIM_MODIFY, L"pytest", L"重新加载失败：端口可能被占用", NIIF_WARNING);
     }
 }
 
@@ -219,16 +219,16 @@ int tray_run(HINSTANCE hInst) {
     HICON icon;
 
     /* 单实例 */
-    mutex = CreateMutexW(NULL, TRUE, L"Local\\SimpleProxy_SingleInstance");
+    mutex = CreateMutexW(NULL, TRUE, L"Local\\pytest_SingleInstance");
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(NULL, L"SimpleProxy 已在运行，请查看系统托盘。",
-                    L"SimpleProxy", MB_ICONINFORMATION);
+        MessageBoxW(NULL, L"pytest 已在运行，请查看系统托盘。",
+                    L"pytest", MB_ICONINFORMATION);
         CloseHandle(mutex);
         return 0;
     }
 
     if (nc_init() != 0) {
-        MessageBoxW(NULL, L"Winsock 初始化失败。", L"SimpleProxy", MB_ICONERROR);
+        MessageBoxW(NULL, L"Winsock 初始化失败。", L"pytest", MB_ICONERROR);
         if (mutex) CloseHandle(mutex);
         return 1;
     }
@@ -247,9 +247,9 @@ int tray_run(HINSTANCE hInst) {
     memset(&wclass, 0, sizeof wclass);
     wclass.lpfnWndProc = WndProc;
     wclass.hInstance = hInst;
-    wclass.lpszClassName = L"SimpleProxyWnd";
+    wclass.lpszClassName = L"pytestWnd";
     RegisterClassW(&wclass);
-    g_hwnd = CreateWindowExW(0, L"SimpleProxyWnd", L"SimpleProxy",
+    g_hwnd = CreateWindowExW(0, L"pytestWnd", L"pytest",
                              WS_OVERLAPPED, 0, 0, 0, 0,
                              NULL, NULL, hInst, NULL);
 
@@ -258,7 +258,7 @@ int tray_run(HINSTANCE hInst) {
 
     notify(NIM_ADD, NULL, NULL, 0);
     if (!g_ok)
-        notify(NIM_MODIFY, L"SimpleProxy",
+        notify(NIM_MODIFY, L"pytest",
                L"代理启动失败，请右键托盘图标重试", NIIF_WARNING);
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
