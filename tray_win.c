@@ -14,6 +14,8 @@
 #define IDM_RELOAD    1002
 #define IDM_AUTOSTART 1003
 #define IDM_QUIT      1004
+#define IDM_VIEWLOG   1005
+#define IDM_VIEWLIST  1006
 
 static HWND   g_hwnd;
 static HICON  g_icon;
@@ -118,6 +120,33 @@ static void set_status(int ok, const char *err_utf8) {
     g_status[127] = 0;
 }
 
+/* 域名列表文件不存在时生成带注释的模板（带 UTF-8 BOM，便于记事本显示中文） */
+static void create_list_template(const wchar_t *path) {
+    static const char bom[] = { (char)0xEF, (char)0xBB, (char)0xBF };
+    static const char tpl[] =
+        "# 域名过滤列表（每行一个域名，# 开头为注释）\r\n"
+        "# 条目自动匹配其全部子域名，大小写不敏感：\r\n"
+        "#   example.com 可匹配 example.com 和 a.example.com\r\n"
+        "#\r\n"
+        "# 在 config.ini 中设置（修改后点托盘「重新加载配置」生效）：\r\n"
+        "#   filter=blacklist  黑名单：本列表中的域名被拦截(403)，其余放行\r\n"
+        "#   filter=whitelist  白名单：仅本列表中的域名放行，其余拦截(403)\r\n"
+        "#\r\n"
+        "# 示例（去掉行首 # 即生效）：\r\n"
+        "# ads.example.com\r\n";
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD written = 0;
+    if (f == INVALID_HANDLE_VALUE) return;
+    WriteFile(f, bom, 3, &written, NULL);
+    WriteFile(f, tpl, (DWORD)(sizeof tpl - 1), &written, NULL);
+    CloseHandle(f);
+}
+
+static void open_in_notepad(const wchar_t *path) {
+    ShellExecuteW(NULL, L"open", L"notepad.exe", path, NULL, SW_SHOWNORMAL);
+}
+
 static void do_reload(void) {
     char err[160];
     app_config cfg;
@@ -141,6 +170,8 @@ static void show_menu(void) {
     AppendMenuW(m, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS, g_status);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_EDIT, L"编辑配置");
+    AppendMenuW(m, MF_STRING, IDM_VIEWLOG, L"查看日志");
+    AppendMenuW(m, MF_STRING, IDM_VIEWLIST, L"查看黑/白名单");
     AppendMenuW(m, MF_STRING, IDM_RELOAD, L"重新加载配置");
     AppendMenuW(m, MF_STRING | (config_autostart_enabled() ? MF_CHECKED : 0),
                 IDM_AUTOSTART, L"开机自启动");
@@ -170,7 +201,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_EDIT: {
             wchar_t path[MAX_PATH];
             config_get_path(path, MAX_PATH, L"config.ini");
-            ShellExecuteW(NULL, L"open", L"notepad.exe", path, NULL, SW_SHOWNORMAL);
+            open_in_notepad(path);
+            break;
+        }
+        case IDM_VIEWLOG: {
+            wchar_t path[MAX_PATH];
+            config_get_path(path, MAX_PATH, L"access.log");
+            if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+                MessageBoxW(g_hwnd,
+                            L"暂无访问日志。\n\n在 config.ini 中将 log 设为 1，"
+                            L"再点「重新加载配置」即可开始记录。",
+                            L"查看日志", MB_ICONINFORMATION);
+            } else {
+                open_in_notepad(path);
+            }
+            break;
+        }
+        case IDM_VIEWLIST: {
+            app_config cfg;
+            config_load(&cfg);
+            if (GetFileAttributesW(cfg.filter_file) == INVALID_FILE_ATTRIBUTES)
+                create_list_template(cfg.filter_file);
+            open_in_notepad(cfg.filter_file);
             break;
         }
         case IDM_RELOAD:
