@@ -37,102 +37,132 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path www | Out-Null
-          Set-Content -NoNewline -Path www/index.html -Value 'hello-proxy'
-          python -c "open('www/big.bin','wb').write(b'\0'*5242880)"
+          function diag($m) { Add-Content -Path test_diag.txt -Value $m }
+          try {
+            New-Item -ItemType Directory -Force -Path www | Out-Null
+            Set-Content -NoNewline -Path www/index.html -Value 'hello-proxy'
+            python -c "open('www/big.bin','wb').write(b'\0'*5242880)"
 
-          Start-Process python -ArgumentList '-m','http.server','18081','--directory','www' -WindowStyle Hidden
-          Start-Sleep -Milliseconds 800
-          Start-Process .\test_proxy.exe -ArgumentList '18080' -WindowStyle Hidden -RedirectStandardError proxy_err.log
-          Start-Sleep -Seconds 2
+            Start-Process python -ArgumentList '-m','http.server','18081','--directory','www' -WindowStyle Hidden
+            Start-Sleep -Milliseconds 800
+            Start-Process .\test_proxy.exe -ArgumentList '18080' -WindowStyle Hidden -RedirectStandardError proxy_err.log
+            Start-Sleep -Seconds 2
 
-          # 1. HTTP 绝对 URI 转发
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o out.txt -w "%{http_code}"
-          if ($code -ne '200') { throw "absolute-uri: $code" }
-          if (-not (Get-Content out.txt -Raw).Contains('hello-proxy')) { throw 'absolute-uri: body mismatch' }
-          Write-Host "1. absolute-uri OK"
+            # 1. HTTP 绝对 URI 转发
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o out.txt -w "%{http_code}"
+            diag "1 absolute-uri code=$code"
+            if ($code -ne '200') { throw "absolute-uri: $code" }
+            if (-not (Get-Content out.txt -Raw).Contains('hello-proxy')) { throw 'absolute-uri: body mismatch' }
+            Write-Host "1. absolute-uri OK"
 
-          # 2. origin-form + Host 头兜底
-          $c = New-Object Net.Sockets.TcpClient('127.0.0.1',18080)
-          $s = $c.GetStream()
-          $req = [Text.Encoding]::ASCII.GetBytes("GET /index.html HTTP/1.1`r`nHost: 127.0.0.1:18081`r`n`r`n")
-          $s.Write($req,0,$req.Length)
-          $c.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
-          $sr = New-Object IO.StreamReader($s)
-          $resp = $sr.ReadToEnd()
-          $c.Close()
-          if (-not $resp.Contains('hello-proxy')) { throw 'origin-form: body mismatch' }
-          Write-Host "2. origin-form OK"
+            # 2. origin-form + Host 头兜底
+            $c = New-Object Net.Sockets.TcpClient('127.0.0.1',18080)
+            $s = $c.GetStream()
+            $req = [Text.Encoding]::ASCII.GetBytes("GET /index.html HTTP/1.1`r`nHost: 127.0.0.1:18081`r`n`r`n")
+            $s.Write($req,0,$req.Length)
+            $c.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
+            $sr = New-Object IO.StreamReader($s)
+            $resp = $sr.ReadToEnd()
+            $c.Close()
+            if (-not $resp.Contains('hello-proxy')) { throw 'origin-form: body mismatch' }
+            Write-Host "2. origin-form OK"
 
-          # 3. CONNECT 隧道（HTTPS）
-          $code = curl.exe -sS --max-time 30 -x http://127.0.0.1:18080 https://example.com -o NUL -w "%{http_code}"
-          if ($code -ne '200') { throw "connect-tunnel: $code" }
-          Write-Host "3. CONNECT OK"
+            # 3. CONNECT 隧道（HTTPS）
+            $code = curl.exe -sS --max-time 30 -x http://127.0.0.1:18080 https://example.com -o NUL -w "%{http_code}"
+            diag "3 connect-tunnel code=$code"
+            if ($code -ne '200') { throw "connect-tunnel: $code" }
+            Write-Host "3. CONNECT OK"
 
-          # 4. 大文件流式转发
-          curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/big.bin -o big.out
-          if ((Get-Item big.out).Length -ne 5242880) { throw 'big-file: size mismatch' }
-          Write-Host "4. big-file OK"
+            # 4. 大文件流式转发
+            curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/big.bin -o big.out
+            if ((Get-Item big.out).Length -ne 5242880) { throw 'big-file: size mismatch' }
+            Write-Host "4. big-file OK"
 
-          # 5. 上游连接失败返回 502
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18082/ -o NUL -w "%{http_code}"
-          if ($code -ne '502') { throw "bad-gateway: $code" }
-          Write-Host "5. 502 OK"
+            # 5. 上游连接失败返回 502
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18082/ -o NUL -w "%{http_code}"
+            diag "5 bad-gateway code=$code"
+            if ($code -ne '502') { throw "bad-gateway: $code" }
+            Write-Host "5. 502 OK"
 
-          # 6. 畸形请求不崩溃
-          $c = New-Object Net.Sockets.TcpClient('127.0.0.1',18080)
-          $s = $c.GetStream()
-          $req = [Text.Encoding]::ASCII.GetBytes("GARBAGE`r`n`r`n")
-          $s.Write($req,0,$req.Length)
-          $c.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
-          $sr = New-Object IO.StreamReader($s)
-          $null = $sr.ReadToEnd()
-          $c.Close()
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
-          if ($code -ne '200') { throw "garbage-recovery: $code" }
-          Write-Host "6. garbage OK"
+            # 6. 畸形请求不崩溃
+            $c = New-Object Net.Sockets.TcpClient('127.0.0.1',18080)
+            $s = $c.GetStream()
+            $req = [Text.Encoding]::ASCII.GetBytes("GARBAGE`r`n`r`n")
+            $s.Write($req,0,$req.Length)
+            $c.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
+            $sr = New-Object IO.StreamReader($s)
+            $null = $sr.ReadToEnd()
+            $c.Close()
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
+            if ($code -ne '200') { throw "garbage-recovery: $code" }
+            Write-Host "6. garbage OK"
 
-          # 重启代理：黑名单模式 + 访问日志
-          Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Milliseconds 500
-          Set-Content -NoNewline -Path domains.txt -Value "blocked.example.com`r`nsub.blocked.example.com`r`n"
-          Start-Process .\test_proxy.exe -ArgumentList '18080','blacklist','domains.txt','access_test.log' -WindowStyle Hidden -RedirectStandardError proxy_err2.log
-          Start-Sleep -Seconds 2
+            # 重启代理：黑名单模式 + 访问日志
+            Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Milliseconds 500
+            Set-Content -NoNewline -Path domains.txt -Value "blocked.example.com`r`nsub.blocked.example.com`r`n"
+            Start-Process .\test_proxy.exe -ArgumentList '18080','blacklist','domains.txt','access_test.log' -WindowStyle Hidden -RedirectStandardError proxy_err2.log
+            Start-Sleep -Seconds 2
 
-          # 7. 黑名单拦截（HTTP / 子域名 / CONNECT），未列入的放行
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://blocked.example.com/ -o NUL -w "%{http_code}"
-          if ($code -ne '403') { throw "blacklist-http: $code" }
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://sub.blocked.example.com/ -o NUL -w "%{http_code}"
-          if ($code -ne '403') { throw "blacklist-subdomain: $code" }
-          $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://blocked.example.com/ -o NUL -w "%{http_code}"
-          if ($code -ne '403') { throw "blacklist-connect: $code" }
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
-          if ($code -ne '200') { throw "blacklist-pass: $code" }
-          Write-Host "7. blacklist OK"
+            # 7. 黑名单拦截（HTTP / 子域名 / CONNECT），未列入的放行
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://blocked.example.com/ -o NUL -w "%{http_code}"
+            diag "7 blacklist-http code=$code"
+            if ($code -ne '403') { throw "blacklist-http: $code" }
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://sub.blocked.example.com/ -o NUL -w "%{http_code}"
+            diag "7 blacklist-subdomain code=$code"
+            if ($code -ne '403') { throw "blacklist-subdomain: $code" }
+            $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://blocked.example.com/ -o NUL -w "%{http_code}"
+            diag "7 blacklist-connect code=$code exit=$LASTEXITCODE"
+            if ($code -ne '403' -and $LASTEXITCODE -eq 0) { throw "blacklist-connect: $code" }
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
+            diag "7 blacklist-pass code=$code"
+            if ($code -ne '200') { throw "blacklist-pass: $code" }
+            Write-Host "7. blacklist OK"
 
-          # 8. 访问日志内容
-          $acc = Get-Content access_test.log -Raw
-          if (-not $acc.Contains('GET blocked.example.com:80 BLOCKED')) { throw 'accesslog: missing blocked GET' }
-          if (-not $acc.Contains('CONNECT blocked.example.com:443 BLOCKED')) { throw 'accesslog: missing blocked CONNECT' }
-          if (-not $acc.Contains('GET 127.0.0.1:18081')) { throw 'accesslog: missing allowed GET' }
-          Write-Host "8. access-log OK"
+            # 8. 访问日志内容
+            $acc = Get-Content access_test.log -Raw
+            $flat = $acc -replace "(`r|`n)", ' | '
+            diag "8 accesslog=$flat"
+            if (-not $acc.Contains('GET blocked.example.com:80 BLOCKED')) { throw 'accesslog: missing blocked GET' }
+            if (-not $acc.Contains('CONNECT blocked.example.com:443 BLOCKED')) { throw 'accesslog: missing blocked CONNECT' }
+            if (-not $acc.Contains('GET 127.0.0.1:18081')) { throw 'accesslog: missing allowed GET' }
+            Write-Host "8. access-log OK"
 
-          # 重启代理：白名单模式
-          Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Milliseconds 500
-          Set-Content -NoNewline -Path wl.txt -Value "# 仅允许 example.com（大小写不敏感）`r`nEXAMPLE.com`r`n"
-          Start-Process .\test_proxy.exe -ArgumentList '18080','whitelist','wl.txt' -WindowStyle Hidden -RedirectStandardError proxy_err3.log
-          Start-Sleep -Seconds 2
+            # 重启代理：白名单模式
+            Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Milliseconds 500
+            Set-Content -NoNewline -Path wl.txt -Value "# only example.com`r`nEXAMPLE.com`r`n"
+            Start-Process .\test_proxy.exe -ArgumentList '18080','whitelist','wl.txt' -WindowStyle Hidden -RedirectStandardError proxy_err3.log
+            Start-Sleep -Seconds 2
 
-          # 9. 白名单：未列入一律拦截，列入的放行
-          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
-          if ($code -ne '403') { throw "whitelist-block: $code" }
-          $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://example.com/ -o NUL -w "%{http_code}"
-          if ($code -ne '200') { throw "whitelist-allow: $code" }
-          Write-Host "9. whitelist OK"
+            # 9. 白名单：未列入一律拦截，列入的放行
+            $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
+            diag "9 whitelist-block code=$code"
+            if ($code -ne '403') { throw "whitelist-block: $code" }
+            $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://example.com/ -o NUL -w "%{http_code}"
+            diag "9 whitelist-allow code=$code"
+            if ($code -ne '200') { throw "whitelist-allow: $code" }
+            Write-Host "9. whitelist OK"
 
-          Write-Host '--- proxy stderr ---'
-          Get-Content proxy_err.log, proxy_err2.log, proxy_err3.log -ErrorAction SilentlyContinue
+            Write-Host '--- proxy stderr ---'
+            Get-Content proxy_err.log, proxy_err2.log, proxy_err3.log -ErrorAction SilentlyContinue
+          } catch {
+            diag "FAILED: $($_.Exception.Message)"
+            throw
+          }
+
+      - name: 上传测试诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics
+          path: |
+            test_diag.txt
+            proxy_err.log
+            proxy_err2.log
+            proxy_err3.log
+            access_test.log
+          if-no-files-found: ignore
 
       - name: 清理测试进程
         if: always()
