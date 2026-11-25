@@ -22,8 +22,12 @@
 /* ---------------- 日志 ---------------- */
 
 static void (*g_log)(const char *) = NULL;
+static void (*g_access)(const char *) = NULL;
+static int (*g_filter)(const char *) = NULL;
 
 void proxy_set_log(void (*fn)(const char *)) { g_log = fn; }
+void proxy_set_access_log(void (*fn)(const char *)) { g_access = fn; }
+void proxy_set_filter(int (*fn)(const char *)) { g_filter = fn; }
 
 static void logf_(const char *fmt, ...) {
     char buf[512];
@@ -33,6 +37,15 @@ static void logf_(const char *fmt, ...) {
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     g_log(buf);
+}
+
+/* 访问日志：method host:port [BLOCKED] */
+static void log_access(const char *method, const char *host, int port, int blocked) {
+    char line[640];
+    if (!g_access) return;
+    snprintf(line, sizeof line, "%s %s:%d%s", method, host, port,
+             blocked ? " BLOCKED" : "");
+    g_access(line);
 }
 
 /* ---------------- 服务器状态 ---------------- */
@@ -393,6 +406,14 @@ static void client_run(nc_socket c) {
             send_simple(c, 400, "Proxy Loop");
             goto done;
         }
+        {
+            int blocked = g_filter && g_filter(host);
+            log_access("CONNECT", host, port, blocked);
+            if (blocked) {
+                send_simple(c, 403, "Forbidden");
+                goto done;
+            }
+        }
         snprintf(portstr, sizeof portstr, "%d", port);
         up = nc_connect_host(host, portstr);
         if (up == NC_INVALID) {
@@ -434,6 +455,14 @@ static void client_run(nc_socket c) {
     if (is_loopback_host(host) && port == g_srv.port) {
         send_simple(c, 400, "Proxy Loop");
         goto done;
+    }
+    {
+        int blocked = g_filter && g_filter(host);
+        log_access(method, host, port, blocked);
+        if (blocked) {
+            send_simple(c, 403, "Forbidden");
+            goto done;
+        }
     }
 
     snprintf(portstr, sizeof portstr, "%d", port);

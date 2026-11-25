@@ -27,10 +27,10 @@ jobs:
         run: |
           set -e
           gcc -O2 -Wall -Wextra -s -static -mwindows \
-            -o pytest.exe main.c proxy.c tray_win.c config_win.c \
+            -o pytest.exe main.c proxy.c tray_win.c config_win.c filter.c \
             -lws2_32 -luser32 -lshell32 -ladvapi32
           gcc -O2 -Wall -Wextra -s -I. \
-            -o test_proxy.exe tests/test_main.c proxy.c -lws2_32
+            -o test_proxy.exe tests/test_main.c proxy.c filter.c -lws2_32
           ls -l pytest.exe test_proxy.exe
 
       - name: 代理功能测试
@@ -92,8 +92,47 @@ jobs:
           if ($code -ne '200') { throw "garbage-recovery: $code" }
           Write-Host "6. garbage OK"
 
+          # 重启代理：黑名单模式 + 访问日志
+          Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Milliseconds 500
+          Set-Content -NoNewline -Path domains.txt -Value "blocked.example.com`r`nsub.blocked.example.com`r`n"
+          Start-Process .\test_proxy.exe -ArgumentList '18080','blacklist','domains.txt','access_test.log' -WindowStyle Hidden -RedirectStandardError proxy_err2.log
+          Start-Sleep -Seconds 2
+
+          # 7. 黑名单拦截（HTTP / 子域名 / CONNECT），未列入的放行
+          $code = curl.exe -sS -x http://127.0.0.1:18080 http://blocked.example.com/ -o NUL -w "%{http_code}"
+          if ($code -ne '403') { throw "blacklist-http: $code" }
+          $code = curl.exe -sS -x http://127.0.0.1:18080 http://sub.blocked.example.com/ -o NUL -w "%{http_code}"
+          if ($code -ne '403') { throw "blacklist-subdomain: $code" }
+          $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://blocked.example.com/ -o NUL -w "%{http_code}"
+          if ($code -ne '403') { throw "blacklist-connect: $code" }
+          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
+          if ($code -ne '200') { throw "blacklist-pass: $code" }
+          Write-Host "7. blacklist OK"
+
+          # 8. 访问日志内容
+          $acc = Get-Content access_test.log -Raw
+          if (-not $acc.Contains('GET blocked.example.com:80 BLOCKED')) { throw 'accesslog: missing blocked GET' }
+          if (-not $acc.Contains('CONNECT blocked.example.com:443 BLOCKED')) { throw 'accesslog: missing blocked CONNECT' }
+          if (-not $acc.Contains('GET 127.0.0.1:18081')) { throw 'accesslog: missing allowed GET' }
+          Write-Host "8. access-log OK"
+
+          # 重启代理：白名单模式
+          Get-Process test_proxy -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Milliseconds 500
+          Set-Content -NoNewline -Path wl.txt -Value "# 仅允许 example.com（大小写不敏感）`r`nEXAMPLE.com`r`n"
+          Start-Process .\test_proxy.exe -ArgumentList '18080','whitelist','wl.txt' -WindowStyle Hidden -RedirectStandardError proxy_err3.log
+          Start-Sleep -Seconds 2
+
+          # 9. 白名单：未列入一律拦截，列入的放行
+          $code = curl.exe -sS -x http://127.0.0.1:18080 http://127.0.0.1:18081/index.html -o NUL -w "%{http_code}"
+          if ($code -ne '403') { throw "whitelist-block: $code" }
+          $code = curl.exe -sS --max-time 20 -x http://127.0.0.1:18080 https://example.com/ -o NUL -w "%{http_code}"
+          if ($code -ne '200') { throw "whitelist-allow: $code" }
+          Write-Host "9. whitelist OK"
+
           Write-Host '--- proxy stderr ---'
-          Get-Content proxy_err.log
+          Get-Content proxy_err.log, proxy_err2.log, proxy_err3.log -ErrorAction SilentlyContinue
 
       - name: 清理测试进程
         if: always()

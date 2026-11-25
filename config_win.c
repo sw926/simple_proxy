@@ -19,10 +19,17 @@ void config_get_path(wchar_t *path, DWORD cap, const wchar_t *name) {
 static void create_template(const wchar_t *path) {
     static const char tpl[] =
         "; pytest 配置文件\r\n"
-        "; port = HTTP 代理监听端口 (1-65535)\r\n"
+        "; port        = HTTP 代理监听端口 (1-65535)\r\n"
+        "; log         = 是否记录访问日志: 0/1（写入 access.log）\r\n"
+        "; filter      = 域名过滤: off / blacklist(黑名单) / whitelist(白名单)\r\n"
+        "; filter_file = 域名列表文件（相对 exe 目录），每行一个域名，\r\n"
+        ";               自动匹配其子域名，# 开头为注释\r\n"
         "; 修改保存后，右键托盘图标 - 重新加载配置 即可生效\r\n"
         "[proxy]\r\n"
-        "port=8080\r\n";
+        "port=8080\r\n"
+        "log=0\r\n"
+        "filter=off\r\n"
+        "filter_file=domains.txt\r\n";
     HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, NULL);
     DWORD written = 0;
@@ -31,15 +38,42 @@ static void create_template(const wchar_t *path) {
     CloseHandle(f);
 }
 
-int config_load_port(void) {
-    wchar_t path[MAX_PATH];
-    int port;
+/* ASCII 大小写不敏感比较（避免依赖 CRT 的 wcsicmp 变体） */
+static int wcseqi(const wchar_t *a, const wchar_t *b) {
+    while (*a && *b) {
+        wchar_t ca = *a, cb = *b;
+        if (ca >= L'A' && ca <= L'Z') ca += 32;
+        if (cb >= L'A' && cb <= L'Z') cb += 32;
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+void config_load(app_config *cfg) {
+    wchar_t path[MAX_PATH], raw[MAX_PATH], mode[32];
+
     config_get_path(path, MAX_PATH, L"config.ini");
     if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
         create_template(path);
-    port = (int)GetPrivateProfileIntW(L"proxy", L"port", CONFIG_DEFAULT_PORT, path);
-    if (port < 1 || port > 65535) port = CONFIG_DEFAULT_PORT;
-    return port;
+
+    cfg->port = (int)GetPrivateProfileIntW(L"proxy", L"port", CONFIG_DEFAULT_PORT, path);
+    if (cfg->port < 1 || cfg->port > 65535) cfg->port = CONFIG_DEFAULT_PORT;
+
+    cfg->log_enabled = GetPrivateProfileIntW(L"proxy", L"log", 0, path) != 0;
+
+    GetPrivateProfileStringW(L"proxy", L"filter", L"off", mode, 32, path);
+    if (wcseqi(mode, L"blacklist"))       cfg->filter_mode = FILTER_BLACKLIST;
+    else if (wcseqi(mode, L"whitelist"))  cfg->filter_mode = FILTER_WHITELIST;
+    else                                  cfg->filter_mode = FILTER_OFF;
+
+    GetPrivateProfileStringW(L"proxy", L"filter_file", L"domains.txt",
+                             raw, MAX_PATH, path);
+    if (raw[0])
+        config_get_path(cfg->filter_file, MAX_PATH, raw);
+    else
+        cfg->filter_file[0] = 0;
 }
 
 int config_autostart_enabled(void) {

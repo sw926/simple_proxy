@@ -5,6 +5,7 @@
 #include "tray_win.h"
 #include "proxy.h"
 #include "config_win.h"
+#include "filter.h"
 
 #define WM_TRAY (WM_APP + 1)
 
@@ -22,14 +23,14 @@ static wchar_t g_status[128];
 
 static CRITICAL_SECTION g_log_lock;
 
-/* ---------- 日志：追加到 exe 目录 pytest.log，超 1MB 截断 ---------- */
+/* ---------- 日志：带时间戳追加到 exe 目录下的文件，超 1MB 截断 ---------- */
 
-static void log_to_file(const char *line) {
+static void append_log_file(const wchar_t *fname, const char *line) {
     wchar_t path[MAX_PATH];
     FILE *f;
     SYSTEMTIME st;
 
-    config_get_path(path, MAX_PATH, L"pytest.log");
+    config_get_path(path, MAX_PATH, fname);
     EnterCriticalSection(&g_log_lock);
     f = _wfopen(path, L"a+");
     if (f) {
@@ -48,6 +49,38 @@ static void log_to_file(const char *line) {
         fclose(f);
     }
     LeaveCriticalSection(&g_log_lock);
+}
+
+/* 错误/诊断日志 → pytest.log */
+static void log_to_file(const char *line) {
+    append_log_file(L"pytest.log", line);
+}
+
+/* 访问日志（config.ini: log=1 时开启）→ access.log */
+static void access_log_cb(const char *line) {
+    append_log_file(L"access.log", line);
+}
+
+/* ---------- 应用配置：访问日志开关 + 域名过滤 ---------- */
+
+static void apply_config(app_config *cfg) {
+    proxy_set_access_log(cfg->log_enabled ? access_log_cb : NULL);
+    filter_set_mode(cfg->filter_mode);
+    filter_clear();
+    if (cfg->filter_mode != FILTER_OFF) {
+        int n = filter_load_file(cfg->filter_file);
+        if (n < 0) {
+            log_to_file("域名列表文件打开失败");
+        } else {
+            char b[96];
+            snprintf(b, sizeof b, "域名过滤开启(%s)，载入 %d 条",
+                     cfg->filter_mode == FILTER_BLACKLIST ? "黑名单" : "白名单", n);
+            log_to_file(b);
+        }
+        proxy_set_filter(filter_blocked);
+    } else {
+        proxy_set_filter(NULL);
+    }
 }
 
 /* ---------- 托盘通知 ---------- */
@@ -87,11 +120,12 @@ static void set_status(int ok, const char *err_utf8) {
 
 static void do_reload(void) {
     char err[160];
-    int port;
+    app_config cfg;
 
     proxy_stop();
-    port = config_load_port();
-    if (proxy_start(port, err, sizeof err) == 0) {
+    config_load(&cfg);
+    apply_config(&cfg);
+    if (proxy_start(cfg.port, err, sizeof err) == 0) {
         set_status(1, NULL);
         notify(NIM_MODIFY, L"pytest", L"配置已重新加载", NIIF_INFO);
     } else {
@@ -215,7 +249,7 @@ int tray_run(HINSTANCE hInst) {
     WNDCLASSW wclass;
     MSG msg;
     char err[160];
-    int port;
+    app_config cfg;
     HICON icon;
 
     /* 单实例 */
@@ -235,9 +269,11 @@ int tray_run(HINSTANCE hInst) {
 
     InitializeCriticalSection(&g_log_lock);
     proxy_set_log(log_to_file);
+    filter_init();
 
-    port = config_load_port();
-    if (proxy_start(port, err, sizeof err) == 0)
+    config_load(&cfg);
+    apply_config(&cfg);
+    if (proxy_start(cfg.port, err, sizeof err) == 0)
         set_status(1, NULL);
     else
         set_status(0, err);
